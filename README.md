@@ -2,5 +2,5 @@
 
 A repo for maps and planning for walking Gudbrandsdalsleden Oslo to Trondheim
 
-[Oslo - Eidsvoll](./gudbrandsdalsleden_map.html)
+[Oslo - Eidsvoll](./oslo_eidsvoll.html)
 
