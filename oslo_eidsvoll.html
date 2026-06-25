@@ -37,6 +37,11 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
 .info-panel .poi-link { display: inline-block; margin-top: 5px; color: #f87171; text-decoration: none; font-size: 11px; }
 .info-panel .poi-link:hover { text-decoration: underline; }
 
+/* "Locate me" button (uses Leaflet's built-in bar styling). */
+.locate-control a { font-size: 0; }
+.locate-control a svg { display: block; margin: 6px auto; }
+.locate-control.locating a { opacity: 0.5; }
+
 /* Make Leaflet's scale ruler readable on the dark map. */
 .leaflet-control-scale-line {
   background: rgba(22, 33, 62, 0.85);
@@ -137,23 +142,29 @@ function cell(label, value) {
   return '<span class="cell"><i>' + label + '</i>' + value + '</span>';
 }
 
-function showInfo(idx, prevIdx) {
-  const p = trackPoints[idx];
-  let line2 =
-    cell("Start", formatDist(stats.cumDist[idx])) +
-    cell("End", formatDist(stats.totalDist - stats.cumDist[idx]));
-  if (prevIdx != null) {
-    const along = Math.abs(stats.cumDist[idx] - stats.cumDist[prevIdx]);
-    const straight = haversine(trackPoints[prevIdx], trackPoints[idx]);
-    line2 += cell("Path", formatDist(along)) + cell("Dist", formatDist(straight));
+function renderClickInfo(ll, onPath, idx, last) {
+  // Line 1: coordinates of the clicked point (+ elevation if it's on the path).
+  let line1 = cell("Lat", ll.lat.toFixed(6)) + cell("Lon", ll.lng.toFixed(6));
+  if (onPath) line1 += cell("Elev", trackPoints[idx][2].toFixed(1) + " m");
+
+  // Line 2: along-track position and distances from the previous click.
+  let line2 = "";
+  if (onPath) {
+    line2 += cell("Start", formatDist(stats.cumDist[idx])) +
+             cell("End", formatDist(stats.totalDist - stats.cumDist[idx]));
   }
-  infoPanel.innerHTML =
-    '<div class="info-line">' +
-      cell("Lat", p[0].toFixed(6)) +
-      cell("Lon", p[1].toFixed(6)) +
-      cell("Elev", p[2].toFixed(1) + " m") +
-    '</div>' +
-    '<div class="info-line">' + line2 + '</div>';
+  if (last) {
+    if (onPath && last.idx != null) {
+      const along = Math.abs(stats.cumDist[idx] - stats.cumDist[last.idx]);
+      line2 += cell("Path", formatDist(along));
+    }
+    const straight = haversine([last.ll.lat, last.ll.lng], [ll.lat, ll.lng]);
+    line2 += cell("Dist", formatDist(straight));
+  }
+
+  let html = '<div class="info-line">' + line1 + '</div>';
+  if (line2) html += '<div class="info-line">' + line2 + '</div>';
+  infoPanel.innerHTML = html;
   infoPanel.classList.add("visible");
 }
 
@@ -164,9 +175,10 @@ function escapeHtml(s) {
   });
 }
 
-function clearInfo() {
-  infoPanel.innerHTML = "";
-  infoPanel.classList.remove("visible");
+// Red circle marking the current position; cleared on the next click.
+let posCircle = null;
+function clearPosition() {
+  if (posCircle) { posCircle.remove(); posCircle = null; }
 }
 
 function showPoiInfo(poi) {
@@ -184,7 +196,49 @@ function addPois(map) {
     L.circleMarker([poi.lat, poi.lon], {
       radius: 4, color: "#fff", weight: 1, fillColor: "#e11d48", fillOpacity: 0.95,
       bubblingMouseEvents: false
-    }).addTo(map).on("click", function () { showPoiInfo(poi); });
+    }).addTo(map).on("click", function () { clearPosition(); showPoiInfo(poi); });
+  });
+}
+
+// ---- "Locate me" button: shows a thin red circle at your current position ----
+function addLocateControl(map) {
+  const ctrl = L.control({ position: "topleft" });
+  ctrl.onAdd = function () {
+    const div = L.DomUtil.create("div", "leaflet-bar locate-control");
+    const a = L.DomUtil.create("a", "", div);
+    a.href = "#";
+    a.title = "Show my position";
+    a.setAttribute("role", "button");
+    a.innerHTML =
+      '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+      'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+      '<circle cx="12" cy="12" r="7"/><line x1="12" y1="1" x2="12" y2="4"/>' +
+      '<line x1="12" y1="20" x2="12" y2="23"/><line x1="1" y1="12" x2="4" y2="12"/>' +
+      '<line x1="20" y1="12" x2="23" y2="12"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/></svg>';
+    L.DomEvent.on(a, "click", function (e) {
+      L.DomEvent.stop(e);
+      L.DomUtil.addClass(div, "locating");
+      map.locate({ enableHighAccuracy: true });
+    });
+    this._container = div;
+    return div;
+  };
+  ctrl.addTo(map);
+
+  map.on("locationfound", function (e) {
+    L.DomUtil.removeClass(ctrl._container, "locating");
+    if (posCircle) posCircle.setLatLng(e.latlng);
+    else posCircle = L.circleMarker(e.latlng, {
+      radius: 12, color: "#e11d48", weight: 2, fill: false
+    }).bindTooltip("You are here", { direction: "top", offset: [0, -12] }).addTo(map);
+  });
+
+  map.on("locationerror", function (e) {
+    L.DomUtil.removeClass(ctrl._container, "locating");
+    infoPanel.innerHTML =
+      '<div class="info-line"><span class="cell"><i>Position</i>' +
+      escapeHtml(e.message || "unavailable") + '</span></div>';
+    infoPanel.classList.add("visible");
   });
 }
 
@@ -231,6 +285,7 @@ function initMap() {
   drawTrack(map, trackPoints);
 
   addPois(map);
+  addLocateControl(map);
 
   const start = trackPoints[0];
   const end = trackPoints[trackPoints.length - 1];
@@ -242,33 +297,65 @@ function initMap() {
 
   map.fitBounds([[start[0], start[1]], [end[0], end[1]]], { padding: [30, 30] });
 
-  // Markers: previous click stays visible (orange), current click is yellow.
-  let currMarker = null, prevMarker = null;
-  let lastIdx = null;
+  // Click measuring: a cyan dot at the click, plus a yellow dot on the nearest
+  // path point when close. Each previous one stays visible (dimmer) so distances
+  // between consecutive clicks are shown.
+  function setDot(m, latlng, color, label) {
+    if (m) m.setLatLng(latlng);
+    else m = L.marker(latlng, { icon: makeDotIcon(color) })
+      .bindTooltip(label, { direction: "top", offset: [0, -10] }).addTo(map);
+    return m;
+  }
+  function delDot(m) { if (m) m.remove(); return null; }
+
+  let curClickM = null, prevClickM = null, curPathM = null, prevPathM = null;
+  let freeLine = null, pathLine = null;
+  let lastClick = null;
+
   map.on("click", function (e) {
-    const idx = findNearest(trackPoints, e.latlng);
-    // Treat the click as "on the path" only if it lands close (in pixels) to the
-    // nearest track point; clicks elsewhere just dismiss the panel.
+    clearPosition();
+    const ll = e.latlng;
+    const idx = findNearest(trackPoints, ll);
+    // "On path" only if the click lands close (in pixels) to the nearest track point.
     let onPath = idx >= 0;
     if (onPath) {
       const p = trackPoints[idx];
-      const dpx = map.latLngToContainerPoint(e.latlng)
+      const dpx = map.latLngToContainerPoint(ll)
         .distanceTo(map.latLngToContainerPoint(L.latLng(p[0], p[1])));
       onPath = dpx <= 20;
     }
-    if (!onPath) { clearInfo(); return; }
-    if (lastIdx != null) {
-      const lp = trackPoints[lastIdx];
-      if (prevMarker) prevMarker.setLatLng([lp[0], lp[1]]);
-      else prevMarker = L.marker([lp[0], lp[1]], { icon: makeDotIcon("#f97316") })
-        .bindTooltip("Previous", { direction: "top", offset: [0, -10] }).addTo(map);
-    }
-    const p = trackPoints[idx];
-    if (currMarker) currMarker.setLatLng([p[0], p[1]]);
-    else currMarker = L.marker([p[0], p[1]], { icon: makeDotIcon("#facc15") })
-      .bindTooltip("Selected", { direction: "top", offset: [0, -10] }).addTo(map);
-    showInfo(idx, lastIdx);
-    lastIdx = idx;
+
+    // Click-location dots (current cyan, previous darker).
+    if (lastClick) prevClickM = setDot(prevClickM, [lastClick.ll.lat, lastClick.ll.lng], "#0e7490", "Previous click");
+    curClickM = setDot(curClickM, [ll.lat, ll.lng], "#22d3ee", "Click");
+
+    // Nearest-on-path dots (current yellow, previous orange).
+    if (lastClick && lastClick.idx != null) {
+      const lp = trackPoints[lastClick.idx];
+      prevPathM = setDot(prevPathM, [lp[0], lp[1]], "#f97316", "Previous (path)");
+    } else prevPathM = delDot(prevPathM);
+    if (onPath) {
+      const p = trackPoints[idx];
+      curPathM = setDot(curPathM, [p[0], p[1]], "#facc15", "Nearest on path");
+    } else curPathM = delDot(curPathM);
+
+    // Thin dashed line between the two free click points ("Dist").
+    if (lastClick) {
+      const seg = [[lastClick.ll.lat, lastClick.ll.lng], [ll.lat, ll.lng]];
+      if (freeLine) freeLine.setLatLngs(seg);
+      else freeLine = L.polyline(seg, { color: "#22d3ee", weight: 2, opacity: 0.9, dashArray: "3,7" }).addTo(map);
+    } else freeLine = delDot(freeLine);
+
+    // Thicker line tracing the path between the two nearest-path points ("Path").
+    if (onPath && lastClick && lastClick.idx != null) {
+      const a = Math.min(lastClick.idx, idx), b = Math.max(lastClick.idx, idx);
+      const seg = trackPoints.slice(a, b + 1).map(function (p) { return [p[0], p[1]]; });
+      if (pathLine) pathLine.setLatLngs(seg);
+      else pathLine = L.polyline(seg, { color: "#facc15", weight: 6, opacity: 0.85 }).addTo(map);
+    } else pathLine = delDot(pathLine);
+
+    renderClickInfo(ll, onPath, idx, lastClick);
+    lastClick = { ll: { lat: ll.lat, lng: ll.lng }, idx: onPath ? idx : null };
   });
 
   return map;
