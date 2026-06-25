@@ -276,7 +276,7 @@ function findNearest(points, ll) {
 }
 
 // ---- Offline tile cache (IndexedDB): stores viewed tiles + a 5 km buffer ----
-const OFFLINE_MIN_Z = 10, OFFLINE_MAX_Z = 16, OFFLINE_BUF_KM = 1;
+const OFFLINE_MIN_Z = 10, OFFLINE_MAX_Z = 19;
 const TILE_URL = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
 
 function openTileDB() {
@@ -314,30 +314,24 @@ function lat2tileY(lat, z) {
   return Math.floor((1 - Math.asinh(Math.tan(r)) / Math.PI) / 2 * Math.pow(2, z));
 }
 
-// Tile coords within bufKm of the track AND inside the given map bounds,
-// for zooms minZ..maxZ. Only caches the visible part of the trail.
-function tilesInView(minZ, maxZ, bufKm, bounds) {
-  const w = bounds.getWest(), e = bounds.getEast(), s = bounds.getSouth(), n = bounds.getNorth();
+// A "tile pyramid" centered on the current view: a screenful of tiles at every
+// zoom minZ..maxZ. Total stays small (~hundreds of tiles) because each zoom only
+// covers a screen-sized window — deep zooms cover a small area around the centre,
+// shallow zooms a wide overview.
+function tilesPyramid(map, minZ, maxZ) {
+  const c = map.getCenter(), size = map.getSize();
+  const hw = (size.x / 2) / 256, hh = (size.y / 2) / 256; // half-viewport, in tiles
   const out = [];
   for (let z = minZ; z <= maxZ; z++) {
-    const vx0 = lon2tileX(w, z), vx1 = lon2tileX(e, z);
-    const vy0 = lat2tileY(n, z), vy1 = lat2tileY(s, z); // north -> smaller y
-    const vxmin = Math.min(vx0, vx1), vxmax = Math.max(vx0, vx1);
-    const vymin = Math.min(vy0, vy1), vymax = Math.max(vy0, vy1);
-    const seen = {};
-    for (let i = 0; i < trackPoints.length; i++) {
-      const lat = trackPoints[i][0], lon = trackPoints[i][1];
-      const dlat = bufKm / 111.32;
-      const dlon = bufKm / (111.32 * Math.cos(lat * Math.PI / 180));
-      const xa = lon2tileX(lon - dlon, z), xb = lon2tileX(lon + dlon, z);
-      const ya = lat2tileY(lat + dlat, z), yb = lat2tileY(lat - dlat, z);
-      const xlo = Math.max(vxmin, Math.min(xa, xb)), xhi = Math.min(vxmax, Math.max(xa, xb));
-      const ylo = Math.max(vymin, Math.min(ya, yb)), yhi = Math.min(vymax, Math.max(ya, yb));
-      for (let x = xlo; x <= xhi; x++) {
-        for (let y = ylo; y <= yhi; y++) {
-          const k = z + "/" + x + "/" + y;
-          if (!seen[k]) { seen[k] = 1; out.push({ z: z, x: x, y: y }); }
-        }
+    const n = Math.pow(2, z);
+    const cx = (c.lng + 180) / 360 * n;
+    const cy = (1 - Math.asinh(Math.tan(c.lat * Math.PI / 180)) / Math.PI) / 2 * n;
+    const x0 = Math.floor(cx - hw), x1 = Math.floor(cx + hw);
+    const y0 = Math.floor(cy - hh), y1 = Math.floor(cy + hh);
+    for (let x = x0; x <= x1; x++) {
+      for (let y = y0; y <= y1; y++) {
+        if (x < 0 || y < 0 || x >= n || y >= n) continue;
+        out.push({ z: z, x: x, y: y });
       }
     }
   }
@@ -421,8 +415,7 @@ function addOfflineControl(map) {
     const div = L.DomUtil.create("div", "leaflet-bar locate-control");
     const a = L.DomUtil.create("a", "", div);
     a.href = "#";
-    a.title = "Cache visible trail tiles for offline use (all zoom levels, "
-      + OFFLINE_BUF_KM + " km buffer)";
+    a.title = "Cache the current view at all zoom levels for offline use";
     a.setAttribute("role", "button");
     a.innerHTML =
       '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
@@ -432,11 +425,10 @@ function addOfflineControl(map) {
     L.DomEvent.on(a, "click", function (e) {
       L.DomEvent.stop(e);
       if (!dbPromise) { offlineStatus("cache unavailable in this browser"); return; }
-      const bounds = map.getBounds();
-      const tiles = tilesInView(OFFLINE_MIN_Z, OFFLINE_MAX_Z, OFFLINE_BUF_KM, bounds);
-      if (!tiles.length) { offlineStatus("no trail in view"); return; }
-      // Mark the cached region with a thin rectangle (accumulates across downloads).
-      L.rectangle(bounds, {
+      const tiles = tilesPyramid(map, OFFLINE_MIN_Z, OFFLINE_MAX_Z);
+      if (!tiles.length) { offlineStatus("nothing to cache"); return; }
+      // Mark the cached view with a thin rectangle (accumulates across downloads).
+      L.rectangle(map.getBounds(), {
         color: "#22c55e", weight: 1, opacity: 0.9, fill: false, interactive: false
       }).addTo(map);
       L.DomUtil.addClass(div, "locating");
