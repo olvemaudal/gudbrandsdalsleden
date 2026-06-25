@@ -65,8 +65,8 @@ Pattern that works well:
    panel output.
 
 Two slicing modes:
-- **Pure functions** (`computeStats`, `tilesInView`, tile math): slice up to *just
-  before* `function initMap` and call them directly — don't execute `initMap`.
+- **Pure functions** (`computeStats`, `tilesAlongTrack`, tile math): slice up to
+  *just before* `function initMap` and call them directly — don't execute `initMap`.
 - **Interaction logic** (click handlers): include through end of `initMap` **and**
   the `try { initMap(); }` call so handlers register; provide full mocks. If you
   stop mid-`try`, you'll get "Unexpected end of input" from unbalanced braces — cut
@@ -140,7 +140,7 @@ later) · `computeStats` · `cell/renderClickInfo` (top-right panel) ·
 `escapeHtml/clearPosition/showPoiInfo/addPois` (red POI dots, click to pin) ·
 `addLocateControl` (geolocation → thin red ring) · `makeDotIcon/drawTrack/
 findNearest` · offline cache block: `OFFLINE_*` consts, `openTileDB/idbGet/idbPut`,
-`dbPromise`, `lon2tileX/lat2tileY`, `tilesInView`, `CachedTileLayer`,
+`dbPromise`, `lon2tileX/lat2tileY`, `tilesAlongTrack`, `CachedTileLayer`,
 `downloadTiles`, `offlineStatus`, `addOfflineControl` · `initMap` ·
 `try { initMap() }`.
 
@@ -151,9 +151,10 @@ Conventions:
   "on path" vs "free" click. Distances: "Dist" = straight line between clicks,
   "Path" = along-track between nearest-path points.
 - `CachedTileLayer` overrides `createTile` to serve from IndexedDB then network
-  (caching the blob). `tilesPyramid(map, minZ, maxZ)` returns a screenful of tiles
-  at every zoom centred on the current view (a "tile pyramid", ~hundreds of tiles
-  total) so each download is small while still covering all zooms.
+  (caching the blob). `tilesAlongTrack(minZ, maxZ)` returns one tile per GPX point
+  (the containing tile), deduped across all zooms — a 1-tile-wide ribbon caching
+  the whole trail (~3,300 tiles / ~64 MB for z10-19). The download button caches
+  this once; throttled via `downloadTiles`.
 
 ## 8. Environment / runtime caveats
 
@@ -164,7 +165,11 @@ Conventions:
   may disable them (the code degrades gracefully).
 - **OSM tiles:** `tile.openstreetmap.org` sends `Access-Control-Allow-Origin: *`
   (so `fetch`+cache works) but its usage policy **forbids bulk downloading**. The
-  offline feature is deliberately viewport-scoped + throttled for this reason.
+  whole-trail cache is ~3,300 requests (a one-time prep) and is throttled (4
+  workers, 25 ms spacing) to be gentle; the on-view layer otherwise caches only
+  what you actually look at. The offline model evolved during development
+  (1 km buffer → per-view pyramid → current 1-tile-per-point ribbon); git history
+  has the alternatives if a different trade-off is ever wanted.
 - Minor quirk: `"use strict"` sits *after* the `var _track` line, so strict mode
   isn't actually in effect. Harmless; just don't rely on it.
 
