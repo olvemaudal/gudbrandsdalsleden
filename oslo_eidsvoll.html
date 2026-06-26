@@ -493,7 +493,7 @@ function initMap() {
       const p = trackPoints[idx];
       const dpx = map.latLngToContainerPoint(ll)
         .distanceTo(map.latLngToContainerPoint(L.latLng(p[0], p[1])));
-      onPath = dpx <= 20;
+      onPath = dpx <= 1000;
     }
 
     // Click-location dots (current cyan, previous darker).
